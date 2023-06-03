@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 from neispy.error import DataNotFound
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (AsyncEngine, AsyncSession,
+                                    create_async_engine)
 from sqlalchemy.orm import Mapped, mapped_column, registry
 from sqlalchemy.sql import select
 

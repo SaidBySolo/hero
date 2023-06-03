@@ -3,7 +3,7 @@ from typing import Any
 
 from sanic import Request, Sanic, json
 
-from hero import Hero
+from hero import Target
 
 
 class Response(dict[str, Any]):
@@ -23,7 +23,7 @@ class Response(dict[str, Any]):
         return d.to_json_response()
 
 
-async def handle_timetable(args: dict[str, Any], hero: Hero):
+async def handle_timetable(args: dict[str, Any], target: Target):
     edu_office_code = args.get("ATPT_OFCDC_SC_CODE")
     standard_school_code = args.get("SD_SCHUL_CODE")
     ay = args.get("AY", "")
@@ -34,7 +34,7 @@ async def handle_timetable(args: dict[str, Any], hero: Hero):
     if not edu_office_code or not standard_school_code:
         return Response.not_found()
 
-    data = await hero.target.get_timetable(
+    data = await target.get_timetable(
         edu_office_code, standard_school_code, ay, sem, grade, room, date
     )
 
@@ -49,9 +49,7 @@ app = Sanic(__name__)
 
 @app.before_server_start
 async def setup(app: Sanic):
-    app.ctx.hero = await Hero.setup(
-        "sqlite+aiosqlite:///rena.db", "sqlite+aiosqlite:///hero.db", ""
-    )
+    app.ctx.target = Target.setup("sqlite+aiosqlite:///hero.db")
 
 
 @app.get("/mealServiceDietInfo")
@@ -64,9 +62,7 @@ async def mealServiceDietInfo(request: Request):
     if not atpt_ofcdc_sc_code or not sd_schul_code:
         return Response.not_found()
 
-    data = await app.ctx.hero.target.get_meal(
-        atpt_ofcdc_sc_code, sd_schul_code, mlsv_ymd
-    )
+    data = await app.ctx.target.get_meal(atpt_ofcdc_sc_code, sd_schul_code, mlsv_ymd)
 
     if not data:
         return Response.not_found()
@@ -76,17 +72,17 @@ async def mealServiceDietInfo(request: Request):
 
 @app.get("/elsTimetable")
 async def elsTimetable(request: Request):
-    return await handle_timetable(request.args, app.ctx.hero)
+    return await handle_timetable(request.args, app.ctx.target)
 
 
 @app.get("misTimetable")
 async def misTimetable(request: Request):
-    return await handle_timetable(request.args, app.ctx.hero)
+    return await handle_timetable(request.args, app.ctx.target)
 
 
 @app.get("/hisTimetable")
 async def hisTimetable(request: Request):
-    return await handle_timetable(request.args, app.ctx.hero)
+    return await handle_timetable(request.args, app.ctx.target)
 
 
 if __name__ == "__main__":
