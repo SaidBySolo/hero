@@ -5,11 +5,20 @@ from hero import Hero
 
 
 class Response(dict[str, Any]):
+    def to_json_response(self):
+        return json(self, content_type="text/html;charset=UTF-8")
+
     @classmethod
     def from_data(cls, data: list[Any]):
         d = cls()
         d.update({"hero": [{}, {"row": [asdict(d) for d in data]}]})
-        return json(d, content_type="text/html;charset=UTF-8")
+        return d.to_json_response()
+
+    @classmethod
+    def not_found(cls):
+        d = cls()
+        d.update({"RESULT": {"CODE": "INFO-200", "MESSAGE": "해당하는 데이터가 없습니다."}})
+        return d.to_json_response()
 
 
 app = Sanic(__name__)
@@ -30,11 +39,14 @@ async def mealServiceDietInfo(request: Request):
     mlsv_ymd = request_args.get("MLSV_YMD")
 
     if not atpt_ofcdc_sc_code or not sd_schul_code:
-        return Response.from_data([])
+        return Response.not_found()
 
     data = await app.ctx.hero.target.get_meal(
         atpt_ofcdc_sc_code, sd_schul_code, mlsv_ymd
     )
+
+    if not data:
+        return Response.not_found()
 
     return Response.from_data(data)
 
