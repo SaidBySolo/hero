@@ -1,16 +1,28 @@
+import logging
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, Optional
 
-from neispy.utils import KST
-from crenata.utils.datetime import to_datetime
 from neispy.error import DataNotFound
-from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import Mapped, mapped_column, registry
 from sqlalchemy.sql import select
 
 from crenata.database import Database
 from crenata.database.schema import *
 from crenata.neispy import CrenataNeispy
+from crenata.utils.datetime import to_datetime, to_yyyymmdd
+
+logger = logging.getLogger(__name__)
+
+
+class SafeNamespace(SimpleNamespace):
+    def __getattribute__(self, value: Any):
+        try:
+            return super().__getattribute__(value)
+        except AttributeError:
+            return ""
+
 
 reg = registry()
 
@@ -40,6 +52,27 @@ class Meal:
     NTR_INFO: Mapped[str] = mapped_column(default="")
     MLSV_FROM_YMD: Mapped[str] = mapped_column(default="")
     MLSV_TO_YMD: Mapped[str] = mapped_column(default="")
+
+
+@reg.mapped_as_dataclass
+class Timetable:
+    __tablename__ = "timetable"
+    id: Mapped[int] = mapped_column(primary_key=True, init=False)
+    ATPT_OFCDC_SC_CODE: Mapped[str] = mapped_column(default="")
+    SD_SCHUL_CODE: Mapped[str] = mapped_column(default="")
+    SCHUL_NM: Mapped[str] = mapped_column(default="")
+    AY: Mapped[str] = mapped_column(default="")
+    SEM: Mapped[str] = mapped_column(default="")
+    ALL_TI_YMD: Mapped[str] = mapped_column(default="")
+    DGHT_CRSE_SC_NM: Mapped[str] = mapped_column(default="")
+    ORD_SC_NM: Mapped[str] = mapped_column(default="")
+    DDDEP_NM: Mapped[str] = mapped_column(default="")
+    GRADE: Mapped[str] = mapped_column(default="")
+    CLRM_NM: Mapped[str] = mapped_column(default="")
+    CLASS_NM: Mapped[str] = mapped_column(default="")
+    PERIO: Mapped[str] = mapped_column(default="")
+    ITRT_CNTNT: Mapped[str] = mapped_column(default="")
+    LOAD_DTM: Mapped[str] = mapped_column(default="")
 
 
 class Source:
@@ -98,6 +131,30 @@ class Target:
             r = await session.execute(stmt)
             return r.scalars().all()
 
+    async def get_timetable(
+        self,
+        atpt: str,
+        sd: str,
+        ay: str,
+        sem: str,
+        grade: str,
+        room: str,
+        date: Optional[str] = None,
+    ):
+        async with AsyncSession(self.engine) as session:
+            stmt = select(Timetable).where(
+                Timetable.ATPT_OFCDC_SC_CODE == atpt,
+                Timetable.SD_SCHUL_CODE == sd,
+                Timetable.AY == ay,
+                Timetable.SEM == sem,
+                Timetable.GRADE == grade,
+                Timetable.CLASS_NM == room,
+            )
+            if date:
+                stmt = stmt.where(Timetable.ALL_TI_YMD == date)
+            r = await session.execute(stmt)
+            return r.scalars().all()
+
     async def put_school_infos(self, school_infos: list[SchoolInfo]):
         async with AsyncSession(self.engine) as session:
             async with session.begin():
@@ -108,6 +165,11 @@ class Target:
             async with session.begin():
                 session.add_all(meals)
 
+    async def put_timetables(self, timetables: list[Timetable]):
+        async with AsyncSession(self.engine) as session:
+            async with session.begin():
+                session.add_all(timetables)
+
 
 class HeroNeispy(CrenataNeispy):
     def get_all_week(self, date: datetime):
@@ -115,18 +177,31 @@ class HeroNeispy(CrenataNeispy):
             date + timedelta(days=i) for i in range(-date.weekday(), 5 - date.weekday())
         ]
 
-    async def get_weekday_meal(self, school_info: SchoolInfo, date: datetime):
-        weekday = self.get_all_week(date)
+    async def get_all_school_meal(
+        self, edu_office_code: str, standard_school_code: str, date: datetime
+    ):
+        weekend = self.get_all_week(date)
         meal_infos: list[Any] = []
-        for day in weekday:
+
+        aws = [
+            self.get_meal(
+                edu_office_code=edu_office_code,
+                standard_school_code=standard_school_code,
+                date=day,
+            )
+            for day in weekend
+        ]
+        for coro in asyncio.as_completed(aws):
             try:
-                r = await self.get_meal(
-                    school_info.ATPT_OFCDC_SC_CODE, school_info.SD_SCHUL_CODE, date=day
-                )
+                r = await coro
             except DataNotFound:
+                logger.warning(
+                    f"Not found meal args: {edu_office_code}, {standard_school_code}, {date}"
+                )
                 continue
             assert r
             for meal in r:
+                meal = SafeNamespace(**vars(meal))
                 meal_infos.append(
                     Meal(
                         ATPT_OFCDC_SC_CODE=meal.ATPT_OFCDC_SC_CODE,
@@ -144,6 +219,71 @@ class HeroNeispy(CrenataNeispy):
                 )
         return meal_infos
 
+    async def get_all_school_timetable(
+        self,
+        edu_office_code: str,
+        standard_school_code: str,
+        school_name: str,
+        date: datetime,
+    ):
+        timetables: list[Timetable] = []
+        weekend = self.get_all_week(date)
+
+        if school_name.endswith("초등학교"):
+            coro = self.elsTimetable
+        elif school_name.endswith("중학교"):
+            coro = self.misTimetable
+        elif school_name.endswith("고등학교"):
+            coro = self.hisTimetable
+        else:
+            coro = self.spsTimetable
+
+        ay = date.year if date.month > 2 else date.year - 1
+        sem = 1 if date.month > 2 and date.month < 8 else 2
+
+        aws = [
+            coro(
+                edu_office_code,
+                standard_school_code,
+                ay,
+                sem,
+                int(to_yyyymmdd(day)),
+            )
+            for day in weekend
+        ]
+
+        for coro in asyncio.as_completed(aws):
+            try:
+                r = await coro
+            except DataNotFound:
+                logger.warning(
+                    f"Not found timetable args: {edu_office_code}, {standard_school_code}, {school_name}, {ay}, {sem}, {date}"
+                )
+                continue
+
+            for timetable in r:
+                timetable = SafeNamespace(**vars(timetable))
+                timetables.append(
+                    Timetable(
+                        ATPT_OFCDC_SC_CODE=timetable.ATPT_OFCDC_SC_CODE,
+                        SD_SCHUL_CODE=timetable.SD_SCHUL_CODE,
+                        SCHUL_NM=timetable.SCHUL_NM,
+                        AY=timetable.AY,
+                        SEM=timetable.SEM,
+                        ALL_TI_YMD=timetable.ALL_TI_YMD,
+                        DGHT_CRSE_SC_NM=timetable.DGHT_CRSE_SC_NM,
+                        ORD_SC_NM=timetable.ORD_SC_NM,
+                        DDDEP_NM=timetable.DDDEP_NM,
+                        GRADE=timetable.GRADE,
+                        CLRM_NM=timetable.CLRM_NM,
+                        CLASS_NM=timetable.CLASS_NM,
+                        PERIO=timetable.PERIO,
+                        ITRT_CNTNT=timetable.ITRT_CNTNT,
+                        LOAD_DTM=timetable.LOAD_DTM,
+                    )
+                )
+        return timetables
+
 
 class Hero:
     def __init__(self, source: Source, target: Target, neispy: HeroNeispy):
@@ -160,7 +300,10 @@ class Hero:
         )
 
     async def compare_school_info(self):
+        logger.info("Comparing school info...")
+        logger.info("Getting school info from source...")
         source_school_infos = await self.source.get_all_school_info_from_source()
+        logger.info("Getting school info from target...")
         target_school_infos = await self.target.get_all_school_info_from_target()
         source_school_infos = set(source_school_infos)
         target_school_infos = set(target_school_infos)
@@ -170,23 +313,62 @@ class Hero:
         school_infos = await self.compare_school_info()
         await self.target.put_school_infos(list(school_infos))
 
+    async def mirror_meal(self, schoolinfos: list[SchoolInfo], date: datetime):
+        logger.info("Start mirroring meal")
+        total = len(schoolinfos)
+        logger.info("total school: %d", total)
+
+        asyncio.gather()
+        for i, school in enumerate(schoolinfos):
+            logger.info("mirroring %d/%d school", i + 1, total)
+            await self.target.put_meals(
+                await self.neispy.get_all_school_meal(
+                    school.ATPT_OFCDC_SC_CODE, school.SD_SCHUL_CODE, date
+                )
+            )
+
+    async def mirror_timetable(self, schoolinfos: list[SchoolInfo], date: datetime):
+        logger.info("Start mirroring timetable")
+        total = len(schoolinfos)
+        logger.info("total school: %d", total)
+        for i, school in enumerate(schoolinfos):
+            logger.info("mirroring %d/%d school", i + 1, total)
+            await self.target.put_timetables(
+                await self.neispy.get_all_school_timetable(
+                    school.ATPT_OFCDC_SC_CODE,
+                    school.SD_SCHUL_CODE,
+                    school.school_name,
+                    date,
+                )
+            )
+
+    async def mirror(self, date: datetime, school_info_mirror: bool = False):
+        logger.info("Start mirroring")
+        if school_info_mirror:
+            await self.mirror_school_info()
+        schoolinfos = list(await self.target.get_all_school_info_from_target())
+        logger.info("Mirroring meals...")
+        await self.mirror_meal(schoolinfos, date)
+        await self.mirror_timetable(schoolinfos, date)
+        logger.info("Done")
+
 
 async def main():
-    hero = await Hero.setup(
-        "sqlite+aiosqlite:///rena.db", "sqlite+aiosqlite:///hero.db", ""
+    # start logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s][%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    # # await hero.mirror_school_info()
-    # # r = await hero.neispy.get_weekday_meal(
-    # #     SchoolInfo("B10", "7091444"), date=datetime.now(KST)
-    # # )
-    # # # print(r)
-    # # await hero.target.put_meals(r)
-    # print(await hero.target.get_meal("B10", "7091444", "20230601"))
-    # if hero.neispy.session and not hero.neispy.session.closed:
-    #     await hero.neispy.session.close()
 
-    hero.neispy.BASE = "http://localhost:8000"
-    print(await hero.neispy.mealServiceDietInfo("B10", "7091444", MLSV_YMD="20230601"))
+    hero = await Hero.setup(
+        "sqlite+aiosqlite:///rena.db",
+        "sqlite+aiosqlite:///hero.db",
+        "",
+    )
+
+    await hero.mirror(to_datetime("20230615"), True)
+    await hero.mirror(to_datetime("20230620"))
 
 
 if __name__ == "__main__":
