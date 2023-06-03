@@ -4,8 +4,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 from neispy.error import DataNotFound
-from sqlalchemy.ext.asyncio import (AsyncEngine, AsyncSession,
-                                    create_async_engine)
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import Mapped, mapped_column, registry
 from sqlalchemy.sql import select
 
@@ -361,15 +360,18 @@ async def main():
         format="[%(asctime)s][%(levelname)s] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-
     hero = await Hero.setup(
         "sqlite+aiosqlite:///rena.db",
         "sqlite+aiosqlite:///hero.db",
         "",
     )
 
-    await hero.mirror(to_datetime("20230615"), True)
-    await hero.mirror(to_datetime("20230620"))
+    try:
+        await hero.mirror(to_datetime("20230615"), True)
+        await hero.mirror(to_datetime("20230620"))
+    finally:
+        if hero.neispy.session and not hero.neispy.session.closed:
+            await hero.neispy.session.close()
 
 
 if __name__ == "__main__":
