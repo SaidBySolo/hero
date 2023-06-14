@@ -49,7 +49,17 @@ app = Sanic(__name__)
 
 @app.before_server_start
 async def setup(app: Sanic):
-    app.ctx.target = Target.setup("sqlite+aiosqlite:///hero.db")
+    app.ctx.target = await Target.setup("sqlite+aiosqlite:///hero.db")
+
+
+@app.get("/schoolInfo")
+async def schoolInfo(request: Request):
+    school_name = request.args.get("SCHUL_NM")
+    data = await app.ctx.target.search_school(school_name)
+    if not data:
+        return Response.not_found()
+
+    return Response.from_data(data)
 
 
 @app.get("/mealServiceDietInfo")

@@ -31,9 +31,31 @@ reg = registry()
 class SchoolInfo:
     __tablename__ = "school_info"
     id: Mapped[int] = mapped_column(primary_key=True, init=False)
-    ATPT_OFCDC_SC_CODE: Mapped[str] = mapped_column()
-    SD_SCHUL_CODE: Mapped[str] = mapped_column()
-    school_name: Mapped[str] = mapped_column(default=None)
+    ATPT_OFCDC_SC_CODE: Mapped[str] = mapped_column(default="")
+    ATPT_OFCDC_SC_NM: Mapped[str] = mapped_column(default="")
+    SD_SCHUL_CODE: Mapped[str] = mapped_column(default="")
+    SCHUL_NM: Mapped[str] = mapped_column(default="")
+    ENG_SCHUL_NM: Mapped[str] = mapped_column(default="")
+    SCHUL_KND_SC_NM: Mapped[str] = mapped_column(default="")
+    LCTN_SC_NM: Mapped[str] = mapped_column(default="")
+    JU_ORG_NM: Mapped[str] = mapped_column(default="")
+    FOND_SC_NM: Mapped[str] = mapped_column(default="")
+    ORG_RDNZC: Mapped[str] = mapped_column(default="")
+    ORG_RDNMA: Mapped[str] = mapped_column(default="")
+    ORG_RDNDA: Mapped[str] = mapped_column(default="")
+    ORG_TELNO: Mapped[str] = mapped_column(default="")
+    HMPG_ADRES: Mapped[str] = mapped_column(default="")
+    COEDU_SC_NM: Mapped[str] = mapped_column(default="")
+    ORG_FAXNO: Mapped[str] = mapped_column(default="")
+    HS_SC_NM: Mapped[str] = mapped_column(default="")
+    INDST_SPECL_CCCCL_EXST_YN: Mapped[str] = mapped_column(default="")
+    HS_GNRL_BUSNS_SC_NM: Mapped[str] = mapped_column(default="")
+    SPCLY_PURPS_HS_ORD_NM: Mapped[str] = mapped_column(default="")
+    ENE_BFE_SEHF_SC_NM: Mapped[str] = mapped_column(default="")
+    DGHT_SC_NM: Mapped[str] = mapped_column(default="")
+    FOND_YMD: Mapped[str] = mapped_column(default="")
+    FOAS_MEMRD: Mapped[str] = mapped_column(default="")
+    LOAD_DTM: Mapped[str] = mapped_column(default="")
 
 
 @reg.mapped_as_dataclass
@@ -100,7 +122,7 @@ class Source:
                 )
             )
             r = await session.execute(stmt)
-            return [SchoolInfo(atpt, sd, sn) for atpt, sd, sn in r.all()]
+            return [(atpt, sd, sn) for atpt, sd, sn in r.all()]
 
 
 class Target:
@@ -113,6 +135,15 @@ class Target:
         async with engine.begin() as connection:
             await connection.run_sync(reg.metadata.create_all, checkfirst=True)
         return cls(engine)
+
+    async def search_school(self, school_name: str):
+        async with AsyncSession(self.engine) as session:
+            # Even if the word is included, it is possible to search
+            stmt = select(SchoolInfo).where(
+                SchoolInfo.SCHUL_NM.like(f"%{school_name}%")
+            )
+            r = await session.execute(stmt)
+            return r.scalars().all()
 
     async def get_all_school_info_from_target(self):
         async with AsyncSession(self.engine) as session:
@@ -176,6 +207,22 @@ class HeroNeispy(CrenataNeispy):
         return [
             date + timedelta(days=i) for i in range(-date.weekday(), 5 - date.weekday())
         ]
+
+    async def log_school_info(
+        self, edu_office_code: str, standard_school_code: str, school_name: str
+    ):
+        try:
+            r = await self.schoolInfo(
+                ATPT_OFCDC_SC_CODE=edu_office_code,
+                SD_SCHUL_CODE=standard_school_code,
+                SCHUL_NM=school_name,
+            )
+        except DataNotFound:
+            logger.warning(
+                f"Not found timetable args: {edu_office_code}, {standard_school_code}, {school_name}"
+            )
+            return
+        return r
 
     async def get_all_school_meal(
         self, edu_office_code: str, standard_school_code: str, date: datetime
@@ -299,26 +346,59 @@ class Hero:
             HeroNeispy(neis_api_key),
         )
 
-    async def compare_school_info(self):
-        logger.info("Comparing school info...")
+    async def mirror_school_info(self):
+        logger.info("Start mirroring school info")
         logger.info("Getting school info from source...")
         source_school_infos = await self.source.get_all_school_info_from_source()
-        logger.info("Getting school info from target...")
-        target_school_infos = await self.target.get_all_school_info_from_target()
-        source_school_infos = set(source_school_infos)
-        target_school_infos = set(target_school_infos)
-        return source_school_infos - target_school_infos
-
-    async def mirror_school_info(self):
-        school_infos = await self.compare_school_info()
-        await self.target.put_school_infos(list(school_infos))
+        infos: list[SchoolInfo] = []
+        total = len(source_school_infos)
+        logger.info("total school: %d", total)
+        aws = [
+            self.neispy.log_school_info(atpt, sd, sn)
+            for atpt, sd, sn in source_school_infos
+        ]
+        for i, coro in enumerate(asyncio.as_completed(aws)):
+            r = await coro
+            logger.info("mirroring %d/%d school", i + 1, total)
+            if not r:
+                continue
+            school_info = r[0]
+            infos.append(
+                SchoolInfo(
+                    ATPT_OFCDC_SC_CODE=school_info.ATPT_OFCDC_SC_CODE,
+                    ATPT_OFCDC_SC_NM=school_info.ATPT_OFCDC_SC_NM,
+                    SD_SCHUL_CODE=school_info.SD_SCHUL_CODE,
+                    SCHUL_NM=school_info.SCHUL_NM,
+                    ENG_SCHUL_NM=school_info.ENG_SCHUL_NM,
+                    SCHUL_KND_SC_NM=school_info.SCHUL_KND_SC_NM,
+                    LCTN_SC_NM=school_info.LCTN_SC_NM,
+                    JU_ORG_NM=school_info.JU_ORG_NM,
+                    FOND_SC_NM=school_info.FOND_SC_NM,
+                    ORG_RDNZC=school_info.ORG_RDNZC,
+                    ORG_RDNMA=school_info.ORG_RDNMA,
+                    ORG_RDNDA=school_info.ORG_RDNDA,
+                    ORG_TELNO=school_info.ORG_TELNO,
+                    HMPG_ADRES=school_info.HMPG_ADRES,
+                    COEDU_SC_NM=school_info.COEDU_SC_NM,
+                    ORG_FAXNO=school_info.ORG_FAXNO,
+                    HS_SC_NM=school_info.HS_SC_NM,
+                    INDST_SPECL_CCCCL_EXST_YN=school_info.INDST_SPECL_CCCCL_EXST_YN,
+                    HS_GNRL_BUSNS_SC_NM=school_info.HS_GNRL_BUSNS_SC_NM,
+                    SPCLY_PURPS_HS_ORD_NM=school_info.SPCLY_PURPS_HS_ORD_NM,
+                    ENE_BFE_SEHF_SC_NM=school_info.ENE_BFE_SEHF_SC_NM,
+                    DGHT_SC_NM=school_info.DGHT_SC_NM,
+                    FOND_YMD=school_info.FOND_YMD,
+                    FOAS_MEMRD=school_info.FOAS_MEMRD,
+                    LOAD_DTM=school_info.LOAD_DTM,
+                )
+            )
+        await self.target.put_school_infos(infos)
 
     async def mirror_meal(self, schoolinfos: list[SchoolInfo], date: datetime):
         logger.info("Start mirroring meal")
         total = len(schoolinfos)
         logger.info("total school: %d", total)
 
-        asyncio.gather()
         for i, school in enumerate(schoolinfos):
             logger.info("mirroring %d/%d school", i + 1, total)
             await self.target.put_meals(
@@ -337,7 +417,7 @@ class Hero:
                 await self.neispy.get_all_school_timetable(
                     school.ATPT_OFCDC_SC_CODE,
                     school.SD_SCHUL_CODE,
-                    school.school_name,
+                    school.SCHUL_NM,
                     date,
                 )
             )
@@ -345,10 +425,12 @@ class Hero:
     async def mirror(self, date: datetime, school_info_mirror: bool = False):
         logger.info("Start mirroring")
         if school_info_mirror:
+            logger.info("Mirroring school info...")
             await self.mirror_school_info()
         schoolinfos = list(await self.target.get_all_school_info_from_target())
         logger.info("Mirroring meals...")
         await self.mirror_meal(schoolinfos, date)
+        logger.info("Mirroring timetables...")
         await self.mirror_timetable(schoolinfos, date)
         logger.info("Done")
 
@@ -368,6 +450,10 @@ async def main():
 
     try:
         await hero.mirror(to_datetime("20230615"), True)
+        await hero.mirror(to_datetime("20230616"))
+        await hero.mirror(to_datetime("20230617"))
+        await hero.mirror(to_datetime("20230618"))
+        await hero.mirror(to_datetime("20230619"))
         await hero.mirror(to_datetime("20230620"))
     finally:
         if hero.neispy.session and not hero.neispy.session.closed:
