@@ -219,7 +219,7 @@ class HeroNeispy(CrenataNeispy):
             )
         except DataNotFound:
             logger.warning(
-                f"Not found timetable args: {edu_office_code}, {standard_school_code}, {school_name}"
+                f"Not found school args: {edu_office_code}, {standard_school_code}, {school_name}"
             )
             return
         return r
@@ -362,7 +362,7 @@ class Hero:
             logger.info("mirroring %d/%d school", i + 1, total)
             if not r:
                 continue
-            school_info = r[0]
+            school_info = SafeNamespace(**vars(r[0]))
             infos.append(
                 SchoolInfo(
                     ATPT_OFCDC_SC_CODE=school_info.ATPT_OFCDC_SC_CODE,
